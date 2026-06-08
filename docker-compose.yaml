@@ -1,0 +1,58 @@
+services:
+    laravel:
+        build:
+            context: './'
+            dockerfile: Dockerfile
+            args:
+                USER_ID: '${WWWUSER:-1000}'
+                GROUP_ID: '${WWWGROUP:-1000}'
+        image: 'sail-8.4/app'
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        ports:
+            - '${APP_PORT:-8000}:8080'
+        environment:
+            WWWUSER: '${WWWUSER}'
+            WWWGROUP: '${WWWGROUP}'
+            LARAVEL_SAIL: 1
+            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
+            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
+            IGNITION_LOCAL_SITES_PATH: '${PWD}'
+            PHP_UPLOAD_MAX_FILE_SIZE: "250M"
+            PHP_OPCACHE_ENABLE: "1"
+            SSL_MODE: "off"
+            AUTO_RUN_ENABLED: 'true'
+
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            - mailpit
+    node:
+        image: 'node:22-alpine'
+        working_dir: /var/www/html
+        ports:
+            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
+        environment:
+            APP_ENV: '${APP_ENV:-local}'
+            NODE_ENV: '${NODE_ENV:-}'
+            VITE_PORT: '${VITE_PORT:-5173}'
+        volumes:
+            - '.:/var/www/html'
+            - 'node_modules:/var/www/html/node_modules'
+        command: ['sh', '/var/www/html/docker-node-entrypoint.sh']
+        networks:
+            - sail
+    mailpit:
+        image: 'axllent/mailpit:latest'
+        ports:
+            - '${FORWARD_MAILPIT_PORT:-1025}:1025'
+            - '${FORWARD_MAILPIT_DASHBOARD_PORT:-8025}:8025'
+        networks:
+            - sail
+volumes:
+    node_modules:
+networks:
+    sail:
+        driver: bridge
