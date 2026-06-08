@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laravel-web
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: laravel-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: laravel-web
+    spec:
+      serviceAccountName: laravel-web
+      automountServiceAccountToken: false
+      initContainers:
+        - name: bootstrap-sqlite
+          image: ghcr.io/bdaley/openshift-laravel-pgsql:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+            - mkdir -p /var/www/html/database /var/www/html/storage/logs && touch /var/www/html/database/database.sqlite && php artisan migrate --force
+          envFrom:
+            - configMapRef:
+                name: laravel-web-config
+            - secretRef:
+                name: laravel-web-secret
+          volumeMounts:
+            - name: database
+              mountPath: /var/www/html/database
+            - name: storage
+              mountPath: /var/www/html/storage
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+      containers:
+        - name: app
+          image: ghcr.io/bdaley/openshift-laravel-pgsql:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: laravel-web-config
+            - secretRef:
+                name: laravel-web-secret
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: database
+              mountPath: /var/www/html/database
+            - name: storage
+              mountPath: /var/www/html/storage
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+      volumes:
+        - name: database
+          persistentVolumeClaim:
+            claimName: laravel-database
+        - name: storage
+          persistentVolumeClaim:
+            claimName: laravel-storage

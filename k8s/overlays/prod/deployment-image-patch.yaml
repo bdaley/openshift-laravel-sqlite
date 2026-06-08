@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laravel-web
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: bootstrap-sqlite
+          image: ghcr.io/bdaley/openshift-laravel-pgsql:latest
+      containers:
+        - name: app
+          image: ghcr.io/bdaley/openshift-laravel-pgsql:latest

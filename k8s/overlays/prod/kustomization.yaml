@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: laravel-prod
+
+resources:
+  - ../../base
+
+patches:
+  - path: route-host-patch.yaml
+  - path: deployment-image-patch.yaml
+
+configMapGenerator:
+  - name: laravel-web-config
+    behavior: merge
+    literals:
+      - APP_ENV=production
+      - APP_URL=https://laravel.apps.example.com
+      - LOG_LEVEL=info
+
+generatorOptions:
+  disableNameSuffixHash: true

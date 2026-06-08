@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: laravel-web
+spec:
+  selector:
+    app.kubernetes.io/name: laravel-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
