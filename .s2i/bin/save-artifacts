@@ -11,12 +11,10 @@ echo "[s2i:save-artifacts] Saving build artifacts"
 
 if [[ -d vendor ]]; then
   tar -C "$APP_DIR" -cf "$ARTIFACTS_DIR/vendor.tar" vendor
-  echo "[s2i:save-artifacts] Saved vendor"
 fi
 
 if [[ -d node_modules ]]; then
   tar -C "$APP_DIR" -cf "$ARTIFACTS_DIR/node_modules.tar" node_modules
-  echo "[s2i:save-artifacts] Saved node_modules"
 fi
 
 echo "[s2i:save-artifacts] Completed"
