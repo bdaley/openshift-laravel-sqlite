@@ -9,12 +9,14 @@ This repository is prepared for Source-to-Image (S2I) usage on OpenShift with th
 ## What Was Added
 
 - `.s2i/bin/assemble`
+	- Restores incremental build artifacts when present
 	- Installs production PHP dependencies
 	- Installs Node dependencies
 	- Builds Vite assets
+	- Ensures Laravel writable runtime paths exist
 	- Clears Laravel caches
 - `.s2i/bin/run`
-	- Starts the app runtime in foreground
+	- Starts a foreground runtime process with safe fallbacks
 	- Does not run database migrations
 - `.s2i/bin/save-artifacts`
 	- Saves `vendor` and `node_modules` for incremental builds
@@ -64,6 +66,50 @@ Use a separate OpenShift Job (or equivalent rollout step) with:
 
 ```bash
 php artisan migrate --force --no-interaction
+```
+
+Minimal Job example:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+	name: laravel-migrate
+	namespace: laravel-staging
+spec:
+	ttlSecondsAfterFinished: 600
+	backoffLimit: 1
+	template:
+		spec:
+			restartPolicy: Never
+			containers:
+				- name: migrate
+					image: image-registry.openshift-image-registry.svc:5000/laravel-staging/laravel-web:latest
+					command: ['php', 'artisan', 'migrate', '--force', '--no-interaction']
+					envFrom:
+						- configMapRef:
+								name: laravel-web
+						- secretRef:
+								name: laravel-web
+					volumeMounts:
+						- name: storage
+							mountPath: /var/www/html/storage
+						- name: database
+							mountPath: /var/www/html/database
+			volumes:
+				- name: storage
+					persistentVolumeClaim:
+						claimName: laravel-storage
+				- name: database
+					persistentVolumeClaim:
+						claimName: laravel-database
+```
+
+Apply it with:
+
+```bash
+oc apply -f migration-job.yaml
+oc -n laravel-staging logs -f job/laravel-migrate
 ```
 
 Expected order:

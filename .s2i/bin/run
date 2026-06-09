@@ -2,17 +2,26 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/var/www/html}"
+PORT="${PORT:-8080}"
 
 cd "$APP_DIR"
 
 echo "[s2i:run] Starting application runtime"
 
+if [[ -x /init ]]; then
+  exec /init
+fi
+
 if [[ -x /etc/entrypoint.d/serversideup-docker-php-entrypoint ]]; then
   exec /etc/entrypoint.d/serversideup-docker-php-entrypoint
 fi
 
-if command -v php-fpm >/dev/null 2>&1; then
-  exec php-fpm -F
+if command -v unitd >/dev/null 2>&1; then
+  exec unitd --no-daemon --control unix:/var/run/control.unit.sock
+fi
+
+if command -v php >/dev/null 2>&1 && [[ -f artisan ]]; then
+  exec php artisan serve --host=0.0.0.0 --port="$PORT"
 fi
 
 echo "[s2i:run] No known runtime entrypoint found" >&2

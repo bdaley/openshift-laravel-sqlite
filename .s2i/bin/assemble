@@ -2,10 +2,24 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/var/www/html}"
+ARTIFACTS_DIR="${ARTIFACTS_DIR:-/tmp/artifacts}"
 
 cd "$APP_DIR"
 
 export COMPOSER_ALLOW_SUPERUSER=1
+
+echo "[s2i:assemble] Restoring cached artifacts when available"
+if [[ -f "$ARTIFACTS_DIR/vendor.tar" ]]; then
+  tar -C "$APP_DIR" -xf "$ARTIFACTS_DIR/vendor.tar"
+fi
+
+if [[ -f "$ARTIFACTS_DIR/node_modules.tar" ]]; then
+  tar -C "$APP_DIR" -xf "$ARTIFACTS_DIR/node_modules.tar"
+fi
+
+echo "[s2i:assemble] Ensuring writable runtime paths"
+mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs database
+touch database/database.sqlite
 
 echo "[s2i:assemble] Installing PHP dependencies"
 composer install --no-interaction --no-dev --optimize-autoloader --prefer-dist
