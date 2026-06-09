@@ -8,6 +8,11 @@ cd "$APP_DIR"
 
 export COMPOSER_ALLOW_SUPERUSER=1
 
+echo "[s2i:assemble] Running assemble script"
+if [[ -x /usr/libexec/s2i/assemble ]]; then
+  /usr/libexec/s2i/assemble
+fi
+
 echo "[s2i:assemble] Restoring cached artifacts when available"
 if [[ -f "$ARTIFACTS_DIR/vendor.tar" ]]; then
   tar -C "$APP_DIR" -xf "$ARTIFACTS_DIR/vendor.tar"
