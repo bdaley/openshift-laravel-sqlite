@@ -3,3 +3,5 @@ DOCUMENTROOT=/public
 COMPOSER_VERSION=2
 COMPOSER_ALLOW_SUPERUSER=1
 COMPOSER_ARGS=--no-plugins --no-scripts
+APP_ENV=production
+APP_DEBUG=true
