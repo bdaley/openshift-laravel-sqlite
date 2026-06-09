@@ -27,6 +27,7 @@ touch database/database.sqlite
 echo "[s2i:assemble] Preparing environment file"
 if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env
+  php artisan key:generate --no-interaction
 fi
 
 echo "[s2i:assemble] Installing Node dependencies"
