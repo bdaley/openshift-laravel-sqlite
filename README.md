@@ -1,192 +1,324 @@
-# OpenShift S2I Prep Guide
+# OpenShift Laravel SQLite — S2I Deployment Guide
 
-This repository is prepared for Source-to-Image (S2I) usage on OpenShift with these constraints:
+This repository is prepared for Source-to-Image (S2I) builds and deployments on OpenShift using SQLite as the database.
 
-- Scope: repository-only S2I enablement
-- Database: keep SQLite
-- Migrations: run from a separate OpenShift Job, not app startup
+Key facts:
 
-## What Was Added
+- **Builder image app directory**: `/opt/app-root/src`
+- **Persistent storage**: single PVC mounted at both `/opt/app-root/src/database` and `/opt/app-root/src/storage`
+- **SQLite database**: `/opt/app-root/src/database/database.sqlite`
+- **Migrations**: run via a separate Job, not at app startup
+- **Replicas**: always 1 — SQLite uses file locking and will error under concurrent writes from multiple pods
 
-- `.s2i/bin/assemble`
-	- Restores incremental build artifacts when present
-	- Installs production PHP dependencies
-	- Installs Node dependencies
-	- Builds Vite assets
-	- Ensures Laravel writable runtime paths exist
-	- Clears Laravel caches
-- `.s2i/bin/run`
-	- Starts a builder-image-centric foreground runtime
-	- Does not run database migrations
-- `.s2i/bin/save-artifacts`
-	- Saves `vendor` and `node_modules` for incremental builds
+## OpenShift Manifests
 
-## Local vs OpenShift
+| File                                            | Purpose                                        |
+| ----------------------------------------------- | ---------------------------------------------- |
+| `openshift/buildconfig-s2i.yaml`                | ImageStream + BuildConfig (S2I build pipeline) |
+| `openshift/runtime-s2i-sqlite-persistence.yaml` | PVC + Service + DeploymentConfig (runtime)     |
+| `openshift/migrate-job-sqlite.yaml`             | One-off migration Job                          |
 
-- Local development keeps using serversideup via `Dockerfile` and `docker-compose.yaml`.
-- OpenShift uses Source strategy builds and `.s2i/bin/*` scripts.
-- OpenShift should not use the Dockerfile when BuildConfig strategy is `Source`.
+## S2I Scripts
 
-## Builder Image Selection
+| File                      | Phase               | Purpose                                                      |
+| ------------------------- | ------------------- | ------------------------------------------------------------ |
+| `.s2i/bin/assemble`       | Build               | Installs PHP/Node deps, builds Vite assets, sets permissions |
+| `.s2i/bin/run`            | Runtime             | Starts the application via the builder image's run script    |
+| `.s2i/bin/save-artifacts` | Build (incremental) | Caches `vendor/` and `node_modules/` between builds          |
+| `.s2i/environment`        | Build               | Sets `APP_DIR`, `DOCUMENTROOT`, and build-time defaults      |
 
-Use the parameterized template at `openshift/buildconfig-s2i.yaml`.
+## Prerequisites
 
-Default builder:
+- [`oc` CLI](https://docs.openshift.com/container-platform/latest/cli_reference/openshift_cli/getting-started-cli.html) installed and on `PATH`
+- Logged in to your cluster:
 
-- `BUILDER_KIND=DockerImage`
-- `BUILDER_IMAGE=registry.access.redhat.com/ubi9/php-84`
+  ```bash
+  oc login <cluster-url>
+  ```
+- Target namespace exists (create if needed):
 
-Template apply example:
+  ```bash
+  oc new-project laravel-staging
+  ```
+- Git repository reachable from the cluster (public, or with a source secret configured)
+
+---
+
+## First Deployment
+
+### Step 1 — Apply the BuildConfig
+
+Creates an ImageStream and BuildConfig. The `ConfigChange` trigger fires a build automatically on first apply.
 
 ```bash
-oc -n laravel-staging process -f openshift/buildconfig-s2i.yaml \
-	-p APP_NAME=laravel-web \
-	-p NAMESPACE=laravel-staging \
-	-p GIT_URI=https://github.com/bdaley/openshift-laravel-pgsql.git \
-	-p GIT_REF=main \
-	-p BUILDER_KIND=DockerImage \
-	-p BUILDER_IMAGE=registry.access.redhat.com/ubi9/php-84 \
-	-p OUTPUT_IMAGESTREAM_TAG=laravel-web:latest | oc apply -f -
+oc process -f openshift/buildconfig-s2i.yaml \
+  -p APP_NAME=laravel-web \
+  -p NAMESPACE=laravel-staging \
+  -p GIT_URI=https://github.com/bdaley/openshift-laravel-sqlite.git \
+  -p GIT_REF=main \
+  -p BUILDER_IMAGE=quay.io/fedora/php-84 \
+  -p OUTPUT_IMAGESTREAM_TAG=laravel-web:latest \
+  | oc apply -f -
+```
+
+Confirm the build strategy is `Source` (not `Docker`):
+
+```bash
+oc -n laravel-staging get bc/laravel-web -o jsonpath='{.spec.strategy.type}{"\n"}'
+# Expected: Source
 ```
 
 Builder override examples:
 
 ```bash
-# Switch to an imagestream builder (if your cluster provides one)
-oc -n laravel-staging process -f openshift/buildconfig-s2i.yaml \
-	-p BUILDER_KIND=ImageStreamTag \
-	-p BUILDER_IMAGE=php:8.4-ubi9 \
-	-p BUILDER_NAMESPACE=openshift | oc apply -f -
+# Use an ImageStreamTag from the cluster's openshift namespace
+oc process -f openshift/buildconfig-s2i.yaml \
+  -p BUILDER_KIND=ImageStreamTag \
+  -p BUILDER_IMAGE=quay.io/fedora/php-84 \
+  -p BUILDER_NAMESPACE=openshift \
+  | oc apply -f -
 
-# One-off patch to an existing BuildConfig
-oc -n laravel-staging patch bc/laravel-web --type=merge -p '{"spec":{"strategy":{"type":"Source","sourceStrategy":{"from":{"kind":"DockerImage","name":"registry.access.redhat.com/ubi9/php-84"}}}}}'
+# Patch the builder image on an already-existing BuildConfig
+oc -n laravel-staging patch bc/laravel-web --type=merge \
+  -p '{"spec":{"strategy":{"sourceStrategy":{"from":{"kind":"DockerImage","name":"quay.io/fedora/php-84"}}}}}' 
 ```
 
-Verify OpenShift ignores Dockerfile:
+### Step 2 — Generate APP_KEY
 
-```bash
-oc -n laravel-staging get bc/laravel-web -o jsonpath='{.spec.strategy.type}{"\n"}'
-```
-
-Expected output: `Source`
-
-## Runtime Assumptions
-
-- App root: `/var/www/html`
-- Public web root: `/var/www/html/public`
-- Health endpoint: `/up`
-- Runtime user: `www-data` (non-root)
-
-## Required Environment Variables
-
-At minimum:
-
-- `APP_ENV=production`
-- `APP_DEBUG=false`
-- `APP_KEY=<generated-secret>`
-- `APP_URL=https://<your-route>`
-- `DB_CONNECTION=sqlite`
-- `DB_DATABASE=/var/www/html/database/database.sqlite`
-
-Recommended for containers:
-
-- `LOG_CHANNEL=stderr`
-
-Generate a key locally:
+Generate the application encryption key locally:
 
 ```bash
 php artisan key:generate --show
+# Outputs: base64:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=
 ```
 
-## Persistent Volume Expectations
+Save this value — you will inject it in Step 4.
 
-Because SQLite is retained, both paths must be writable and persistent:
-
-- `/var/www/html/storage`
-- `/var/www/html/database`
-
-If these are not persistent, sessions, cache, logs, and database data can be lost on pod restart.
-
-## Migration Job Strategy
-
-Do not run migrations in app startup.
-
-Use a separate OpenShift Job (or equivalent rollout step) with:
+### Step 3 — Watch the Build
 
 ```bash
-php artisan migrate --force --no-interaction
+oc -n laravel-staging logs -f bc/laravel-web
 ```
 
-Minimal Job example:
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: laravel-migrate
-  namespace: laravel-staging
-spec:
-  ttlSecondsAfterFinished: 600
-  backoffLimit: 1
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: migrate
-          image: image-registry.openshift-image-registry.svc:5000/laravel-staging/laravel-web:latest
-          command: ['php', 'artisan', 'migrate', '--force', '--no-interaction']
-          envFrom:
-            - configMapRef:
-                name: laravel-web
-            - secretRef:
-                name: laravel-web
-          volumeMounts:
-            - name: storage
-              mountPath: /var/www/html/storage
-            - name: database
-              mountPath: /var/www/html/database
-      volumes:
-        - name: storage
-          persistentVolumeClaim:
-            claimName: laravel-storage
-        - name: database
-          persistentVolumeClaim:
-            claimName: laravel-database
-```
-
-Apply it with:
+Or start a build manually if the automatic trigger did not fire:
 
 ```bash
-oc apply -f migration-job.yaml
-oc -n laravel-staging logs -f job/laravel-migrate
+oc -n laravel-staging start-build laravel-web --follow
 ```
 
-Expected order:
+Wait until you see `Push successful` before proceeding.
 
-1. Build image via S2I.
-2. Deploy app image.
-3. Run migration Job.
-4. Confirm readiness and route traffic.
+### Step 4 — Apply the Runtime Template
 
-## Local Verification Commands
-
-From repository root:
+Creates the PVC, Service, and DeploymentConfig. Replace `APP_URL` with your actual route hostname.
 
 ```bash
-chmod +x .s2i/bin/assemble .s2i/bin/run .s2i/bin/save-artifacts
+oc process -f openshift/runtime-s2i-sqlite-persistence.yaml \
+  -p APP_NAME=laravel-web \
+  -p NAMESPACE=laravel-staging \
+  -p APP_URL=https://laravel-web-laravel-staging.apps.example.com \
+  -p PVC_SIZE=5Gi \
+  | oc apply -f -
 ```
 
+Inject the required env vars that are not in the template:
+
 ```bash
+oc -n laravel-staging set env dc/laravel-web \
+  APP_KEY='base64:YOUR_GENERATED_KEY_HERE' \
+  LOG_CHANNEL=stderr
+```
+
+`LOG_CHANNEL=stderr` routes Laravel logs to `oc logs` output, which is strongly recommended for containers.
+
+### Step 5 — Run the Migration Job
+
+Wait until the build from Step 3 has completed and the ImageStream tag is updated before running migrations.
+
+Each Job run must use a unique `JOB_NAME` because Kubernetes Jobs are immutable once created. Use a version number or timestamp suffix.
+
+```bash
+oc process -f openshift/migrate-job-sqlite.yaml \
+  -p APP_NAME=laravel-web \
+  -p NAMESPACE=laravel-staging \
+  -p JOB_NAME=laravel-web-migrate-v1 \
+  | oc apply -f -
+```
+
+Watch the migration output:
+
+```bash
+oc -n laravel-staging logs -f job/laravel-web-migrate-v1
+```
+
+Confirm completion:
+
+```bash
+oc -n laravel-staging get job laravel-web-migrate-v1
+# COMPLETIONS column should show 1/1
+```
+
+### Step 6 — Create a Route
+
+```bash
+oc -n laravel-staging expose svc/laravel-web \
+  --hostname=laravel-web-laravel-staging.apps.example.com
+```
+
+For TLS edge termination with HTTP→HTTPS redirect:
+
+```bash
+oc -n laravel-staging create route edge laravel-web \
+  --service=laravel-web \
+  --hostname=laravel-web-laravel-staging.apps.example.com \
+  --insecure-policy=Redirect
+```
+
+### Step 7 — Verify
+
+```bash
+# Pod should be Running
+oc -n laravel-staging get pods -l app=laravel-web
+
+# Get the route URL
+oc -n laravel-staging get route laravel-web
+
+# Hit the health endpoint
+curl -I https://laravel-web-laravel-staging.apps.example.com/up
+# Expected: HTTP/2 200
+```
+
+---
+
+## Redeployment
+
+After pushing new code, the `ImageChange` trigger on the DeploymentConfig rolls out the new image automatically once the build completes.
+
+```bash
+# 1. Trigger a new build (or push to Git to trigger automatically)
+oc -n laravel-staging start-build laravel-web --follow
+
+# 2. Run migrations if the release includes schema changes.
+#    Increment JOB_NAME each time.
+oc process -f openshift/migrate-job-sqlite.yaml \
+  -p NAMESPACE=laravel-staging \
+  -p JOB_NAME=laravel-web-migrate-v2 \
+  | oc apply -f -
+
+oc -n laravel-staging logs -f job/laravel-web-migrate-v2
+
+# 3. Watch the rollout (triggered automatically by ImageChange)
+oc -n laravel-staging rollout status dc/laravel-web
+
+# Force a manual rollout if needed
+oc -n laravel-staging rollout latest dc/laravel-web
+```
+
+---
+
+## Required Environment Variables
+
+Variables marked *template* are set automatically when you apply the runtime template. All others must be injected via `oc set env`.
+
+| Variable        | Value                                                 | Source                   |
+| --------------- | ----------------------------------------------------- | ------------------------ |
+| `APP_ENV`       | `production`                                          | template                 |
+| `APP_DEBUG`     | `false`                                               | template                 |
+| `APP_URL`       | `https://<your-route>`                                | template parameter       |
+| `DB_CONNECTION` | `sqlite`                                              | template                 |
+| `DB_DATABASE`   | `/opt/app-root/src/database/database.sqlite`          | template                 |
+| `APP_KEY`       | `base64:...` — from `php artisan key:generate --show` | **manual**               |
+| `LOG_CHANNEL`   | `stderr`                                              | **manual** (recommended) |
+
+View currently set env vars:
+
+```bash
+oc -n laravel-staging set env dc/laravel-web --list
+```
+
+---
+
+## Persistent Volume
+
+A single PVC (`laravel-web-data` by default, `5Gi`) is mounted at two `subPath` entries on the same claim:
+
+| Mount path                   | SubPath    | Contents                                        |
+| ---------------------------- | ---------- | ----------------------------------------------- |
+| `/opt/app-root/src/database` | `database` | SQLite file + WAL/SHM journal files             |
+| `/opt/app-root/src/storage`  | `storage`  | Logs, framework cache, sessions, uploaded files |
+
+Data in these paths survives pod restarts and new deployments. If either path is missing or unwritable the application will fail to start correctly.
+
+> **SQLite and replicas:** Keep replicas at 1. SQLite uses file locking; concurrent writes from multiple pods produce `database is locked` errors.
+
+---
+
+## Useful Commands
+
+```bash
+# Stream live application logs
+oc -n laravel-staging logs -f dc/laravel-web
+
+# Open an interactive shell in the running pod
+oc -n laravel-staging rsh dc/laravel-web
+
+# Run an Artisan command inside the running pod
+oc -n laravel-staging rsh dc/laravel-web php artisan tinker
+
+# Check PVC mount paths exist and are writable
+oc -n laravel-staging rsh dc/laravel-web \
+  ls -la /opt/app-root/src/database /opt/app-root/src/storage
+
+# Confirm the SQLite file is present
+oc -n laravel-staging rsh dc/laravel-web \
+  ls -lh /opt/app-root/src/database/database.sqlite
+
+# List all env vars on the DeploymentConfig
+oc -n laravel-staging set env dc/laravel-web --list
+
+# Force a pod restart without triggering a new build
+oc -n laravel-staging rollout latest dc/laravel-web
+
+# Scale down to 0 and back (hard restart)
+oc -n laravel-staging scale dc/laravel-web --replicas=0
+oc -n laravel-staging scale dc/laravel-web --replicas=1
+
+# List all resources for this app
+oc -n laravel-staging get all,pvc -l app=laravel-web
+```
+
+---
+
+## Local Development
+
+Local development uses Laravel Sail via `compose.yaml` and does not use the OpenShift builder image.
+
+```bash
+# Start the local environment
+./vendor/bin/sail up
+
+# Run tests
 php artisan test --compact
 ```
 
+---
+
 ## Troubleshooting
 
-- Permission denied on `storage` or `database`:
-	- Ensure mounted volumes are writable by the runtime UID/GID used by the container.
-- Missing Vite manifest errors:
-	- Ensure `npm run build` completed in S2I assemble.
-- App starts but fails readiness:
-	- Verify `APP_KEY`, `APP_URL`, and SQLite path env values.
-- Migration failures:
-	- Run migrations via job and verify target database path is mounted and writable.
+- **Permission denied on `storage` or `database`**: The PVC must be writable by the arbitrary UID the container runs as. The `fsGroup: 0` in the pod spec covers the default case. Diagnose with:
+
+  ```bash
+  oc -n laravel-staging rsh dc/laravel-web ls -la /opt/app-root/src/database
+  ```
+- **Missing Vite manifest (`Unable to locate file in Vite manifest`)**: `npm run build` did not complete during S2I assemble. Re-trigger the build and check assemble logs with `oc -n laravel-staging logs -f bc/laravel-web`.
+- **App starts but `/up` returns non-200**: Verify `APP_KEY`, `APP_URL`, and `DB_DATABASE` are set:
+
+  ```bash
+  oc -n laravel-staging set env dc/laravel-web --list
+  ```
+- **Migration Job fails**: Confirm the PVC is bound (`oc -n laravel-staging get pvc`) and the image tag used by the Job matches the pushed ImageStream tag.
+- **`database is locked` errors**: More than one replica is running. Scale back to 1:
+
+  ```bash
+  oc -n laravel-staging scale dc/laravel-web --replicas=1
+  ```

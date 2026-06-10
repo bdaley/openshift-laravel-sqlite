@@ -1,0 +1,115 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: laravel-s2i-runtime-sqlite
+parameters:
+  - name: APP_NAME
+    value: laravel-web
+  - name: NAMESPACE
+    value: laravel-staging
+  - name: APP_URL
+    value: http://laravel-web-laravel-staging.apps.example.com
+  - name: IMAGESTREAM_TAG
+    value: latest
+  - name: PVC_NAME
+    value: laravel-web-data
+  - name: PVC_SIZE
+    value: 5Gi
+  - name: RUN_MIGRATIONS_ON_STARTUP
+    value: "false"
+objects:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${PVC_NAME}
+      namespace: ${NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: ${PVC_SIZE}
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: ${APP_NAME}
+      namespace: ${NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+    spec:
+      selector:
+        app: ${APP_NAME}
+        deploymentconfig: ${APP_NAME}
+      ports:
+        - name: http
+          port: 80
+          targetPort: 8080
+          protocol: TCP
+
+  - apiVersion: apps.openshift.io/v1
+    kind: DeploymentConfig
+    metadata:
+      name: ${APP_NAME}
+      namespace: ${NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+    spec:
+      replicas: 1
+      selector:
+        app: ${APP_NAME}
+        deploymentconfig: ${APP_NAME}
+      strategy:
+        type: Rolling
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            deploymentconfig: ${APP_NAME}
+        spec:
+          containers:
+            - name: ${APP_NAME}
+              image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/${APP_NAME}:${IMAGESTREAM_TAG}
+              imagePullPolicy: Always
+              ports:
+                - containerPort: 8080
+                  protocol: TCP
+              env:
+                - name: APP_ENV
+                  value: production
+                - name: APP_DEBUG
+                  value: "false"
+                - name: APP_URL
+                  value: ${APP_URL}
+                - name: DB_CONNECTION
+                  value: sqlite
+                - name: DB_DATABASE
+                  value: /opt/app-root/src/database/database.sqlite
+                - name: RUN_MIGRATIONS_ON_STARTUP
+                  value: ${RUN_MIGRATIONS_ON_STARTUP}
+              volumeMounts:
+                - name: laravel-data
+                  mountPath: /opt/app-root/src/database
+                  subPath: database
+                - name: laravel-data
+                  mountPath: /opt/app-root/src/storage
+                  subPath: storage
+          securityContext:
+            fsGroup: 0
+          volumes:
+            - name: laravel-data
+              persistentVolumeClaim:
+                claimName: ${PVC_NAME}
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - ${APP_NAME}
+            from:
+              kind: ImageStreamTag
+              name: ${APP_NAME}:${IMAGESTREAM_TAG}
+              namespace: ${NAMESPACE}

@@ -8,7 +8,7 @@ parameters:
   - name: NAMESPACE
     value: laravel-staging
   - name: GIT_URI
-    value: https://github.com/bdaley/openshift-laravel-pgsql.git
+    value: https://github.com/bdaley/openshift-laravel-sqlite.git
   - name: GIT_REF
     value: main
   - name: CONTEXT_DIR
@@ -16,7 +16,7 @@ parameters:
   - name: BUILDER_KIND
     value: DockerImage
   - name: BUILDER_IMAGE
-    value: registry.access.redhat.com/ubi9/php-84
+    value: quay.io/fedora/php-84
   - name: BUILDER_NAMESPACE
     value: openshift
   - name: OUTPUT_IMAGESTREAM_TAG

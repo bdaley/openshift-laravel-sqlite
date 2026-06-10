@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/var/www/html}"
+APP_DIR="${APP_DIR:-/opt/app-root/src}"
 PORT="${PORT:-8080}"
+RUN_MIGRATIONS_ON_STARTUP="${RUN_MIGRATIONS_ON_STARTUP:-false}"
 
 cd "$APP_DIR"
 
-# Run migrations automatically on startup without asking for confirmation
-echo "[s2i:run] Running database migrations..."
-php artisan migrate --force
+# Optionally run migrations on startup.
+# Prefer a separate Job in OpenShift for better rollout control.
+if [[ "$RUN_MIGRATIONS_ON_STARTUP" == "true" ]]; then
+  echo "[s2i:run] Running database migrations..."
+  php artisan migrate --force
+else
+  echo "[s2i:run] Skipping startup migrations (RUN_MIGRATIONS_ON_STARTUP=false)"
+fi
 
 
 echo "[s2i:run] Starting application runtime"

@@ -1,0 +1,63 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: laravel-s2i-migrate-job
+parameters:
+  - name: APP_NAME
+    value: laravel-web
+  - name: NAMESPACE
+    value: laravel-staging
+  - name: IMAGESTREAM_TAG
+    value: latest
+  - name: PVC_NAME
+    value: laravel-web-data
+  - name: JOB_NAME
+    value: laravel-web-migrate
+objects:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: ${JOB_NAME}
+      namespace: ${NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+        job: migrate
+    spec:
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            job: migrate
+        spec:
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 0
+          containers:
+            - name: migrate
+              image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/${APP_NAME}:${IMAGESTREAM_TAG}
+              imagePullPolicy: Always
+              command:
+                - php
+                - artisan
+                - migrate
+                - --force
+              env:
+                - name: APP_ENV
+                  value: production
+                - name: DB_CONNECTION
+                  value: sqlite
+                - name: DB_DATABASE
+                  value: /opt/app-root/src/database/database.sqlite
+              volumeMounts:
+                - name: laravel-data
+                  mountPath: /opt/app-root/src/database
+                  subPath: database
+                - name: laravel-data
+                  mountPath: /opt/app-root/src/storage
+                  subPath: storage
+          volumes:
+            - name: laravel-data
+              persistentVolumeClaim:
+                claimName: ${PVC_NAME}
